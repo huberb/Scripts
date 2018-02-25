@@ -12,11 +12,7 @@ class Producer:
     def __init__(self):
 	    print "start Producer.." 
 
-    def start(self, serversocket, queue):
-        serversocket.bind(('', 9998))
-        serversocket.listen(5)
-    	(clientsocket, port) = serversocket.accept()
-    	print "connection incoming.." 
+    def start(self, clientsocket, queue):
     	while True:
             message = clientsocket.recv(1024)
             queue.put(message) 
@@ -26,14 +22,17 @@ class Consumer():
     def __init__(self):
         print "start Consumer.."
 
-    def start(self, serversocket, queue):
+    def start(self, clientsocket, queue):
         while True:
             if not queue.empty():
                 assigment = queue.get()
                 if assigment == '0\r\n': 
                     break
+                elif str.startswith(assigment, "magnet:?"):
+                    torrent_file = self.convert(assigment, "torrent_tmp")
+                    self.download(torrent_file, clientsocket)
                 else:
-                    self.convert(assigment, "torrent_tmp")
+                    print("got broken magnet..")
                 
             print "checking queue.."
             time.sleep(1)
@@ -92,16 +91,49 @@ class Consumer():
         shutil.rmtree(tempdir)
 
         return output
+    
+    def download(self, file, clientsocket):
+        print("downloading")
+        ses = lt.session()
+        ses.listen_on(6881, 6891)
+
+        info = lt.torrent_info(file)
+        h = ses.add_torrent({'ti': info, 'save_path': './downloads/'})
+
+        while (not h.is_seed()):
+            s = h.status()
+            state_str = ['queued', 'checking', 'downloading metadata', \
+                'downloading', 'finished', 'seeding', 'allocating', 'checking fastresume']
+
+            progress = round(s.progress * 100, 2)
+            d_rate = s.download_rate / 1000
+            u_rate = s.upload_rate / 1000
+            peers_count = s.num_peers
+            state = state_str[s.state]
+
+            # print("complete: %.2f, down: %.1f kB/s, up: %.1f kB/s, peers: %d, state: %s" % \
+            # (progress, d_rate, u_rate, peers_count, state),)
+            report = "complete: {0} %, down: {1} kB/s, up: {2} kB/s, peers: {3}, state: {4}".format(progress, d_rate, u_rate, peers_count, state)
+            clientsocket.send(report)
+            time.sleep(1)
+
+        clientsocket.send(h.name() + 'complete')
+        time.sleep(3)
 
 
+serversocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+serversocket.bind(('', 9999))
+serversocket.listen(5)
+print("waiting for connection..")
+(clientsocket, port) = serversocket.accept()
+print("found one, starting now..")
 
 producer = Producer()
 consumer = Consumer()
 queue = Queue()
-serversocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
-t1 = threading.Thread( target=producer.start, args=(serversocket, queue) )
-t2 = threading.Thread( target=consumer.start, args=(serversocket, queue) )
+t1 = threading.Thread( target=producer.start, args=(clientsocket, queue) )
+t2 = threading.Thread( target=consumer.start, args=(clientsocket, queue) )
 
 t1.start()
 t2.start()
